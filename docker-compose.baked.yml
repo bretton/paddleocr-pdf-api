@@ -11,11 +11,11 @@ services:
     environment:
       # Image description via local Ollama (Gemma 4 E4B), OpenAI-compatible API.
       # Container-to-container the host is the service name "ollama", not localhost.
-      - IMAGE_DESCRIPTION_ENABLED=true
-      - IMAGE_DESCRIPTION_PROVIDER=openai
-      - IMAGE_DESCRIPTION_API_URL=http://ollama:11434/v1
-      - IMAGE_DESCRIPTION_MODEL=gemma4:e4b
-      - IMAGE_DESCRIPTION_API_KEY=ollama          # dummy; the OpenAI client requires a value
+      # - IMAGE_DESCRIPTION_ENABLED=true
+      # - IMAGE_DESCRIPTION_PROVIDER=openai
+      # - IMAGE_DESCRIPTION_API_URL=http://ollama:11434/v1
+      # - IMAGE_DESCRIPTION_MODEL=gemma4:e4b
+      # - IMAGE_DESCRIPTION_API_KEY=ollama          # dummy; the OpenAI client requires a value
     # Other optional settings:
     #   - API_KEY="your-secret-key"
     #   # Database backend (optional - SQLite by default when DATABASE_URL is unset)
