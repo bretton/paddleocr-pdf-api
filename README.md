@@ -338,7 +338,7 @@ The check is non-fatal — it never blocks startup if the vision backend is stil
 
 This fork bundles an [Ollama](https://ollama.com) service so image descriptions can run **entirely locally** on the same GPU, with no third-party API key. Gemma 4 E4B is a multimodal (image-capable) model served over Ollama's OpenAI-compatible API, which the existing `IMAGE_DESCRIPTION_*` hook consumes directly.
 
-The bundled `docker-compose.yml` already wires this up:
+The bundled `docker-compose.yml` already wires this up, but commented out. Uncomment and set`IMAGE_DESCRIPTION_ENABLED` to `true` to enable:
 
 ```yaml
 services:
@@ -347,11 +347,11 @@ services:
     depends_on:
       - ollama
     environment:
-      - IMAGE_DESCRIPTION_ENABLED=true
-      - IMAGE_DESCRIPTION_PROVIDER=openai
-      - IMAGE_DESCRIPTION_API_URL=http://ollama:11434/v1   # service name, not localhost
-      - IMAGE_DESCRIPTION_MODEL=gemma4:e4b
-      - IMAGE_DESCRIPTION_API_KEY=ollama                   # dummy; client requires a value
+      - IMAGE_DESCRIPTION_ENABLED=false  # Enable if you have a compatible model and want to use it for image description.
+      # - IMAGE_DESCRIPTION_PROVIDER=openai
+      # - IMAGE_DESCRIPTION_API_URL=http://ollama:11434/v1
+      # - IMAGE_DESCRIPTION_MODEL=gemma4:e4b
+      # - IMAGE_DESCRIPTION_API_KEY=ollama          # dummy; the OpenAI client requires a value
 
   ollama:
     image: ollama/ollama:latest          # requires Ollama >= 0.20.0 for Gemma 4
