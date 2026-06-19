@@ -2,7 +2,7 @@ services:
   paddleocr:
     build: .
     ports:
-      - "8099:8000"
+      - "127.0.0.1:8099:8000"
     depends_on:
       - ollama
     environment:
@@ -37,7 +37,7 @@ services:
   ollama:
     image: ollama/ollama:latest          # requires Ollama >= 0.20.0 for Gemma 4
     ports:
-      - "11434:11434"                    # OpenAI-compatible API at localhost:11434/v1
+      - "127.0.0.1:11434:11434"                    # OpenAI-compatible API at localhost:11434/v1
     volumes:
       - ollama-models:/root/.ollama
     environment:
