@@ -3,20 +3,22 @@ services:
     build: .
     ports:
       - "8099:8000"
-    # environment:
+    depends_on:
+      - ollama
+    environment:
+      # Image description via local Ollama (Gemma 4 E4B), OpenAI-compatible API.
+      # Container-to-container the host is the service name "ollama", not localhost.
+      - IMAGE_DESCRIPTION_ENABLED=true
+      - IMAGE_DESCRIPTION_PROVIDER=openai
+      - IMAGE_DESCRIPTION_API_URL=http://ollama:11434/v1
+      - IMAGE_DESCRIPTION_MODEL=gemma4:e4b
+      - IMAGE_DESCRIPTION_API_KEY=ollama          # dummy; the OpenAI client requires a value
+    # Other optional settings:
     #   - API_KEY="your-secret-key"
     #   # Database backend (optional - SQLite by default when DATABASE_URL is unset)
     #   - DATABASE_URL=postgresql://user:password@host:5432/ocr
     #   # Run mode (optional - server by default; job drains the queue then exits)
     #   - RUN_MODE=server                             # server | job
-    #   # Image description (optional - disabled by default)
-    #   - IMAGE_DESCRIPTION_ENABLED=true
-    #   - IMAGE_DESCRIPTION_PROVIDER=azure            # openai | azure
-    #   - IMAGE_DESCRIPTION_API_URL="https://<your-resource>.cognitiveservices.azure.com"
-    #   - IMAGE_DESCRIPTION_API_VERSION="2025-04-01-preview"
-    #   - IMAGE_DESCRIPTION_API_MODE=responses        # chat_completions | responses
-    #   - IMAGE_DESCRIPTION_MODEL="gpt-5.4"
-    #   - IMAGE_DESCRIPTION_API_KEY="your-vision-key"
     volumes:
       - ocr-data:/data
     deploy:
@@ -32,5 +34,25 @@ services:
     #   docker compose run --rm -e RUN_MODE=job paddleocr
     # On SQLite, run job mode only when no server container is using the same volume.
 
+  ollama:
+    image: ollama/ollama:latest          # requires Ollama >= 0.20.0 for Gemma 4
+    ports:
+      - "11434:11434"                    # OpenAI-compatible API at localhost:11434/v1
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=5m             # unload idle models to free VRAM (shared GPU)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    # Pull the model once after first start:
+    #   docker compose exec ollama ollama pull gemma4:e4b
+
 volumes:
   ocr-data:
+  ollama-models:

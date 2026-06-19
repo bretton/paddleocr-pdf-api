@@ -44,6 +44,45 @@ def _get_vision_client():
     return _vision_client
 
 
+def check_vision_endpoint() -> bool:
+    """Log whether the image-description (vision) endpoint is reachable.
+
+    Non-fatal: prints a single status line and returns True/False. Skips
+    silently-ish when the feature is disabled. Called at startup so it's
+    obvious from the logs whether PaddleOCR can reach Ollama.
+    """
+    if not config.IMAGE_DESCRIPTION_ENABLED:
+        print("[image-desc] disabled (IMAGE_DESCRIPTION_ENABLED not set)", flush=True)
+        return False
+
+    url = config.IMAGE_DESCRIPTION_API_URL
+    model = config.IMAGE_DESCRIPTION_MODEL
+    try:
+        client = _get_vision_client()
+        if config.IMAGE_DESCRIPTION_PROVIDER == "azure":
+            # Azure lists deployments differently; just confirm the client built.
+            print(f"[image-desc] enabled -> azure endpoint {url} (deployment '{model}')", flush=True)
+            return True
+        models = [m.id for m in client.models.list().data]
+        if model in models:
+            print(f"[image-desc] OK: reached {url}; model '{model}' is available", flush=True)
+        else:
+            print(
+                f"[image-desc] WARNING: reached {url} but model '{model}' is not loaded. "
+                f"Available: {', '.join(models) or '(none)'}. Pull it with "
+                f"`docker compose exec ollama ollama pull {model}`.",
+                flush=True,
+            )
+        return True
+    except Exception as e:
+        print(
+            f"[image-desc] WARNING: cannot reach vision endpoint {url}: {e}. "
+            "Image descriptions will fail until it is reachable.",
+            flush=True,
+        )
+        return False
+
+
 def _parse_image_path(path: str):
     name = os.path.basename(path)
     m = _IMG_PATH_RE.search(name)

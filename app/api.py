@@ -14,6 +14,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app import config
 from app import db
+from app.image_describe import check_vision_endpoint
 from app.worker import OCRWorker
 
 
@@ -33,6 +34,7 @@ async def lifespan(app):
     Path(config.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
     if config.BACKEND == "sqlite":
         db.recover_sqlite_jobs()
+    check_vision_endpoint()
     worker.start()
     try:
         yield
@@ -230,6 +232,7 @@ def run_job():
 
     db.init_db()
     Path(config.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+    check_vision_endpoint()
 
     def _handle_stop(signum, frame):
         worker.stop()

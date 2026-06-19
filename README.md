@@ -2,6 +2,8 @@
 
 A self-hosted PDF OCR API powered by [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) and the PaddleOCR-VL model. Runs on GPU via Docker, processes PDFs page-by-page, and returns markdown content in JSON responses. Good support (not perfect) for Latvian and Lithuanian languages.
 
+> **Fork notice:** This is a fork maintained at [github.com/bretton/paddleocr-pdf-api](https://github.com/bretton/paddleocr-pdf-api), based on the original [Edgaras0x4E/paddleocr-pdf-api](https://github.com/Edgaras0x4E/paddleocr-pdf-api). It targets **Ubuntu 24.04 + CUDA 12.9** and adds an optional **local image-description backend (Ollama + Gemma 4 E4B)**. The prebuilt Docker Hub images are the upstream's and do not include these changes — build from source (below) to get them.
+
 ## Contents
 
 - [Model](#model)
@@ -13,6 +15,7 @@ A self-hosted PDF OCR API powered by [PaddleOCR](https://github.com/PaddlePaddle
   - [Database backend](#database-backend)
   - [Job mode](#job-mode)
   - [Image descriptions](#image-descriptions)
+  - [Local image descriptions with Ollama + Gemma 4](#local-image-descriptions-with-ollama--gemma-4)
   - [API key authentication](#api-key-authentication)
 - [Data persistence](#data-persistence)
 - [Changelog](#changelog)
@@ -24,13 +27,24 @@ A self-hosted PDF OCR API powered by [PaddleOCR](https://github.com/PaddlePaddle
 | **Model** | PaddleOCR-VL-1.6 |
 | **Parameters** | 0.9B |
 | **Layout detection** | PP-DocLayoutV3 |
-| **GPU VRAM** | ~8.5GB |
+| **GPU VRAM** | ~8.5GB (OCR only); ~18GB if also running Ollama + Gemma 4 E4B |
 | **Input formats** | PDF, PNG, JPG, JPEG, BMP, TIFF, WEBP |
+| **FlashAttention-2** | Used automatically by `paddlepaddle-gpu` on GPUs with Compute Capability ≥ 8.0 (e.g. RTX 30/40/50, A10/A100) |
 
 ## Requirements
 
-- Docker with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- NVIDIA GPU with ~8.5GB VRAM
+- **OS / CUDA:** Built for **Ubuntu 24.04** with **CUDA 12.9** (base image `nvcr.io/nvidia/cuda:12.9.2-cudnn-runtime-ubuntu24.04`).
+- **NVIDIA driver:** ≥ 575 (required by the CUDA 12.9 runtime).
+- **NVIDIA Container Toolkit:** ≥ 1.19.1 — see the [install guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html). After install: `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`.
+- **GPU VRAM:** ~8.5GB for OCR alone; ~18GB to also run the local Gemma 4 E4B describer on the same card.
+
+Verify the toolkit and driver before building:
+
+```bash
+docker run --rm --gpus all nvcr.io/nvidia/cuda:12.9.2-cudnn-runtime-ubuntu24.04 nvidia-smi
+```
+
+If that prints your GPU, you're ready to build.
 
 ## Quick start
 
@@ -61,14 +75,22 @@ volumes:
 docker compose up -d
 ```
 
-**Or build from source:**
+**Or build from source (this fork — Ubuntu 24.04 / CUDA 12.9):**
 
 ```bash
-git clone https://github.com/Edgaras0x4E/paddleocr-pdf-api.git && cd paddleocr-pdf-api
+git clone https://github.com/bretton/paddleocr-pdf-api.git && cd paddleocr-pdf-api
 docker compose up --build -d
 ```
 
-The API will be available at `http://localhost:8099`. On first startup the model (~2GB) is downloaded and loaded into GPU memory. The API accepts requests immediately, but jobs will start processing once the model is ready.
+The bundled `docker-compose.yml` builds two services: `paddleocr` (the API, on `localhost:8099`) and `ollama` (the local vision model, on `localhost:11434`). On first startup the OCR model (~2GB) is downloaded and loaded into GPU memory. The API accepts requests immediately, but jobs will start processing once the model is ready.
+
+If you want local image descriptions, pull the Gemma 4 model once after the stack is up:
+
+```bash
+docker compose exec ollama ollama pull gemma4:e4b
+```
+
+See [Local image descriptions with Ollama + Gemma 4](#local-image-descriptions-with-ollama--gemma-4) for details.
 
 **Baked image (no first-run download):** for scale-to-zero or cold-start-sensitive deployments, change the image tag to `edgaras0x4e/paddleocr-pdf-api:latest-baked`. The model is pre-baked into the image, so the container starts without downloading anything; cold-start warmup is only the model load into GPU memory.
 
@@ -287,6 +309,70 @@ environment:
   - IMAGE_DESCRIPTION_PROMPT_CHART="Extract all data points from this chart as a markdown table."
 ```
 
+**Startup connectivity check.** On boot (in both server and job mode) the API logs whether it can reach the configured vision endpoint, so misconfiguration is obvious in `docker compose logs paddleocr`:
+
+```
+[image-desc] OK: reached http://ollama:11434/v1; model 'gemma4:e4b' is available
+[image-desc] WARNING: reached http://ollama:11434/v1 but model 'gemma4:e4b' is not loaded. ...
+[image-desc] WARNING: cannot reach vision endpoint http://ollama:11434/v1: <error>. ...
+[image-desc] disabled (IMAGE_DESCRIPTION_ENABLED not set)
+```
+
+The check is non-fatal — it never blocks startup if the vision backend is still coming up.
+
+### Local image descriptions with Ollama + Gemma 4
+
+This fork bundles an [Ollama](https://ollama.com) service so image descriptions can run **entirely locally** on the same GPU, with no third-party API key. Gemma 4 E4B is a multimodal (image-capable) model served over Ollama's OpenAI-compatible API, which the existing `IMAGE_DESCRIPTION_*` hook consumes directly.
+
+The bundled `docker-compose.yml` already wires this up:
+
+```yaml
+services:
+  paddleocr:
+    # ...
+    depends_on:
+      - ollama
+    environment:
+      - IMAGE_DESCRIPTION_ENABLED=true
+      - IMAGE_DESCRIPTION_PROVIDER=openai
+      - IMAGE_DESCRIPTION_API_URL=http://ollama:11434/v1   # service name, not localhost
+      - IMAGE_DESCRIPTION_MODEL=gemma4:e4b
+      - IMAGE_DESCRIPTION_API_KEY=ollama                   # dummy; client requires a value
+
+  ollama:
+    image: ollama/ollama:latest          # requires Ollama >= 0.20.0 for Gemma 4
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=5m             # unload idle model to free VRAM on the shared GPU
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  ollama-models:
+```
+
+Bring it up and pull the model once:
+
+```bash
+docker compose up -d
+docker compose exec ollama ollama pull gemma4:e4b   # ~9.6GB, one-time
+```
+
+Notes:
+
+- **Endpoints.** PaddleOCR stays on `localhost:8099`; Ollama is on `localhost:11434` (OpenAI-compatible at `/v1`). Container-to-container, PaddleOCR reaches Ollama via the service name `ollama`, not `localhost`.
+- **VRAM.** PaddleOCR-VL (~8.5GB) + Gemma 4 E4B (~9.6GB) ≈ 18GB on a single card. If you hit CUDA OOM, lower `OLLAMA_KEEP_ALIVE` (e.g. `30s`) so Gemma unloads faster between calls, or run Ollama on a second GPU.
+- **GPU sharing.** Both containers request the same NVIDIA device and time-share it; no extra configuration is needed beyond the `deploy.resources` block.
+- **Higher throughput.** For heavy, concurrent description workloads, vLLM (with continuous batching) outperforms Ollama, at the cost of holding VRAM resident. Ollama is the better fit for the bursty, low-volume description workload and a shared GPU.
+
 ### API key authentication
 
 Uncomment the environment section in `docker-compose.yml`:
@@ -313,6 +399,15 @@ curl -H "X-API-Key: your-secret-key" http://localhost:8099/jobs
 The `/data` volume stores the SQLite database and uploaded PDFs. This is a named Docker volume (`ocr-data`) that persists across container restarts and rebuilds. When `DATABASE_URL` points at PostgreSQL, the database lives in PostgreSQL and `/data` only holds uploaded files during processing.
 
 ## Changelog
+
+### Fork (bretton/paddleocr-pdf-api)
+
+- Migrated the base image to **Ubuntu 24.04 + CUDA 12.9** (`cuda:12.9.2-cudnn-runtime-ubuntu24.04`) from Ubuntu 22.04 / CUDA 12.6, with the matching `cu129` PaddlePaddle wheel index.
+- Fixed Ubuntu 24.04 build breakage: replaced the removed `libgl1-mesa-glx` with `libgl1 libglx-mesa0`, and installed Python packages into an isolated venv to satisfy PEP 668 (externally-managed environment).
+- Documented the **NVIDIA Container Toolkit ≥ 1.19.1** and driver ≥ 575 requirements, plus a GPU verification command.
+- Added an optional **local image-description backend (Ollama + Gemma 4 E4B)** wired into `docker-compose.yml` via the existing OpenAI-compatible `IMAGE_DESCRIPTION_*` hook — no third-party API key needed.
+- Added a non-fatal **startup connectivity check** that logs whether the vision endpoint is reachable and the model is loaded.
+- Notes on FlashAttention-2 (used automatically on Compute Capability ≥ 8.0 GPUs) and an Ollama-vs-vLLM trade-off for the describer.
 
 ### v0.4.0
 
