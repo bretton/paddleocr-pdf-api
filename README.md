@@ -6,19 +6,33 @@ A self-hosted PDF OCR API powered by [PaddleOCR](https://github.com/PaddlePaddle
 
 ## Contents
 
-- [Model](#model)
-- [Requirements](#requirements)
-- [Quick start](#quick-start)
-- [Usage](#usage)
-- [API reference](#api-reference)
-- [Configuration](#configuration)
-  - [Database backend](#database-backend)
-  - [Job mode](#job-mode)
-  - [Image descriptions](#image-descriptions)
-  - [Local image descriptions with Ollama + Gemma 4](#local-image-descriptions-with-ollama--gemma-4)
-  - [API key authentication](#api-key-authentication)
-- [Data persistence](#data-persistence)
-- [Changelog](#changelog)
+- [Self-Hosted PDF OCR API for Large Documents](#self-hosted-pdf-ocr-api-for-large-documents)
+	- [Contents](#contents)
+	- [Model](#model)
+	- [Requirements](#requirements)
+	- [Quick start](#quick-start)
+	- [Usage](#usage)
+		- [Submit a PDF](#submit-a-pdf)
+		- [Check progress](#check-progress)
+		- [Get a single page](#get-a-single-page)
+		- [Get all pages](#get-all-pages)
+		- [List all jobs](#list-all-jobs)
+		- [Cancel a job](#cancel-a-job)
+		- [Delete a job](#delete-a-job)
+	- [API reference](#api-reference)
+	- [Configuration](#configuration)
+		- [Database backend](#database-backend)
+		- [Job mode](#job-mode)
+		- [Image descriptions](#image-descriptions)
+		- [Local image descriptions with Ollama + Gemma 4](#local-image-descriptions-with-ollama--gemma-4)
+		- [API key authentication](#api-key-authentication)
+	- [Data persistence](#data-persistence)
+	- [Changelog](#changelog)
+		- [Fork (bretton/paddleocr-pdf-api)](#fork-brettonpaddleocr-pdf-api)
+		- [v0.4.0](#v040)
+		- [v0.3.0](#v030)
+		- [v0.2.0](#v020)
+	- [License](#license)
 
 ## Model
 
@@ -55,7 +69,7 @@ services:
   paddleocr:
     image: edgaras0x4e/paddleocr-pdf-api:latest
     ports:
-      - "8099:8000"
+      - "127.0.0.1:8099:8000"
     volumes:
       - ocr-data:/data
     deploy:
@@ -342,7 +356,7 @@ services:
   ollama:
     image: ollama/ollama:latest          # requires Ollama >= 0.20.0 for Gemma 4
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama-models:/root/.ollama
     environment:
