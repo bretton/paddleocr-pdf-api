@@ -93,6 +93,7 @@ services:
       - ollama-models:/root/.ollama
     environment:
       - OLLAMA_KEEP_ALIVE=5m             # unload idle models to free VRAM (shared GPU)
+      - OLLAMA_CONTEXT_LENGTH=65536
     deploy:
       resources:
         reservations:
