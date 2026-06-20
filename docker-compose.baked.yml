@@ -1,3 +1,47 @@
+# Shared Honcho config (used by both the api and the deriver).
+# All text-generation features run on gemma4:e4b via the local Ollama service;
+# embeddings run on nomic-embed-text (gemma4 cannot produce embeddings).
+x-honcho-env: &honcho-env
+  DB_CONNECTION_URI: postgresql+psycopg://postgres:postgres@postgres:5432/honcho
+  CACHE_URL: redis://redis:6379/0?suppress=true
+  CACHE_ENABLED: "true"
+  AUTH_USE_AUTH: "false"
+  LLM_OPENAI_API_KEY: ollama            # dummy; Ollama ignores it but the OpenAI client needs a value
+  # --- Text generation -> gemma4 via Ollama (OpenAI-compatible API) ---
+  DERIVER_MODEL_CONFIG__TRANSPORT: openai
+  DERIVER_MODEL_CONFIG__MODEL: gemma4:e4b
+  DERIVER_MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
+  SUMMARY_MODEL_CONFIG__TRANSPORT: openai
+  SUMMARY_MODEL_CONFIG__MODEL: gemma4:e4b
+  SUMMARY_MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
+  DREAM_DEDUCTION_MODEL_CONFIG__TRANSPORT: openai
+  DREAM_DEDUCTION_MODEL_CONFIG__MODEL: gemma4:e4b
+  DREAM_DEDUCTION_MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
+  DREAM_INDUCTION_MODEL_CONFIG__TRANSPORT: openai
+  DREAM_INDUCTION_MODEL_CONFIG__MODEL: gemma4:e4b
+  DREAM_INDUCTION_MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
+  DIALECTIC_LEVELS__minimal__MODEL_CONFIG__TRANSPORT: openai
+  DIALECTIC_LEVELS__minimal__MODEL_CONFIG__MODEL: gemma4:e4b
+  DIALECTIC_LEVELS__minimal__MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
+  DIALECTIC_LEVELS__low__MODEL_CONFIG__TRANSPORT: openai
+  DIALECTIC_LEVELS__low__MODEL_CONFIG__MODEL: gemma4:e4b
+  DIALECTIC_LEVELS__low__MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
+  DIALECTIC_LEVELS__medium__MODEL_CONFIG__TRANSPORT: openai
+  DIALECTIC_LEVELS__medium__MODEL_CONFIG__MODEL: gemma4:e4b
+  DIALECTIC_LEVELS__medium__MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
+  DIALECTIC_LEVELS__high__MODEL_CONFIG__TRANSPORT: openai
+  DIALECTIC_LEVELS__high__MODEL_CONFIG__MODEL: gemma4:e4b
+  DIALECTIC_LEVELS__high__MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
+  DIALECTIC_LEVELS__max__MODEL_CONFIG__TRANSPORT: openai
+  DIALECTIC_LEVELS__max__MODEL_CONFIG__MODEL: gemma4:e4b
+  DIALECTIC_LEVELS__max__MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
+  # --- Embeddings -> nomic-embed-text via Ollama (768-dim) ---
+  EMBED_MESSAGES: "true"
+  EMBEDDING_VECTOR_DIMENSIONS: "768"
+  EMBEDDING_MODEL_CONFIG__TRANSPORT: openai
+  EMBEDDING_MODEL_CONFIG__MODEL: nomic-embed-text
+  EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
+
 services:
   paddleocr:
     build:
@@ -7,8 +51,13 @@ services:
     ports:
       - "127.0.0.1:8099:8000"
     depends_on:
-      - ollama
+      ollama:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
+      # Use the shared Postgres "ocr" database (container-to-container host = "postgres").
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/ocr
       # Image description via local Ollama (Gemma 4 E4B), OpenAI-compatible API.
       # Container-to-container the host is the service name "ollama", not localhost.
       # - IMAGE_DESCRIPTION_ENABLED=true
@@ -18,8 +67,6 @@ services:
       # - IMAGE_DESCRIPTION_API_KEY=ollama          # dummy; the OpenAI client requires a value
     # Other optional settings:
     #   - API_KEY="your-secret-key"
-    #   # Database backend (optional - SQLite by default when DATABASE_URL is unset)
-    #   - DATABASE_URL=postgresql://user:password@host:5432/ocr
     #   # Run mode (optional - server by default; job drains the queue then exits)
     #   - RUN_MODE=server                             # server | job
     volumes:
@@ -56,6 +103,94 @@ services:
     # Pull the model once after first start:
     #   docker compose -f docker-compose.baked.yml exec ollama ollama pull gemma4:e4b
 
+  # Shared PostgreSQL (pgvector). Hosts two databases:
+  #   - "ocr"    : PaddleOCR job/page state (plain tables)
+  #   - "honcho" : Honcho, with the pgvector extension enabled
+  # db/init.sql creates both databases on first init.
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "127.0.0.1:5432:5432"                        # localhost only
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis backing Honcho's cache.
+  redis:
+    image: redis:8.2
+    ports:
+      - "127.0.0.1:6379:6379"                        # localhost only
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Honcho API. Built from source (no published image).
+  # Requires an LLM provider key (see .env.honcho.example) or it will not start.
+  honcho:
+    build:
+      context: "https://github.com/plastic-labs/honcho.git"
+      dockerfile: Dockerfile
+    entrypoint: ["sh", "docker/entrypoint.sh"]       # runs migrations, then starts the API
+    ports:
+      - "127.0.0.1:8000:8000"                        # localhost only
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment: *honcho-env
+    env_file:
+      - path: .env.honcho                            # optional: overrides for the anchor above
+        required: false
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # Honcho background worker (deriver). Required for memory/reasoning to occur.
+  honcho-deriver:
+    build:
+      context: "https://github.com/plastic-labs/honcho.git"
+      dockerfile: Dockerfile
+    entrypoint: ["/app/.venv/bin/python", "-m", "src.deriver"]
+    depends_on:
+      honcho:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment: *honcho-env
+    env_file:
+      - path: .env.honcho
+        required: false
+    restart: unless-stopped
+
 volumes:
   ocr-data:
   ollama-models:
+  pg-data:
+  redis-data:
