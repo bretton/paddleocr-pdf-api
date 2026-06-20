@@ -1,6 +1,6 @@
 # Shared Honcho config (used by both the api and the deriver).
 # All text-generation features run on gemma4:e4b via the local Ollama service;
-# embeddings run on nomic-embed-text (gemma4 cannot produce embeddings).
+# embeddings run on mxbai-embed-large (gemma4 cannot produce embeddings).
 x-honcho-env: &honcho-env
   DB_CONNECTION_URI: postgresql+psycopg://postgres:postgres@postgres:5432/honcho
   CACHE_URL: redis://redis:6379/0?suppress=true
@@ -35,11 +35,12 @@ x-honcho-env: &honcho-env
   DIALECTIC_LEVELS__max__MODEL_CONFIG__TRANSPORT: openai
   DIALECTIC_LEVELS__max__MODEL_CONFIG__MODEL: gemma4:e4b
   DIALECTIC_LEVELS__max__MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
-  # --- Embeddings -> nomic-embed-text via Ollama (768-dim) ---
+  # --- Embeddings -> mxbai-embed-large via Ollama (1024-dim, 512-token window) ---
   EMBED_MESSAGES: "true"
-  EMBEDDING_VECTOR_DIMENSIONS: "768"
+  EMBEDDING_VECTOR_DIMENSIONS: "1024"
+  EMBEDDING_MAX_INPUT_TOKENS: "512"     # mxbai-embed-large context window
   EMBEDDING_MODEL_CONFIG__TRANSPORT: openai
-  EMBEDDING_MODEL_CONFIG__MODEL: nomic-embed-text
+  EMBEDDING_MODEL_CONFIG__MODEL: mxbai-embed-large
   EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL: http://ollama:11434/v1
 
 services:
@@ -143,7 +144,17 @@ services:
     build:
       context: "https://github.com/plastic-labs/honcho.git"
       dockerfile: Dockerfile
-    entrypoint: ["sh", "docker/entrypoint.sh"]       # runs migrations, then starts the API
+    # Default entrypoint runs migrations + server only. We insert
+    # configure_embeddings.py so the pgvector column is resized from the
+    # migration default (1536) to EMBEDDING_VECTOR_DIMENSIONS (1024). Idempotent.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        /app/.venv/bin/python scripts/provision_db.py
+        /app/.venv/bin/python scripts/configure_embeddings.py --yes
+        exec /app/.venv/bin/fastapi run --host 0.0.0.0 src/main.py
     ports:
       - "127.0.0.1:8000:8000"                        # localhost only
     depends_on:
