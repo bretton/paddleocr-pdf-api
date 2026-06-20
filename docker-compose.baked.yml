@@ -59,6 +59,10 @@ services:
     environment:
       # Use the shared Postgres "ocr" database (container-to-container host = "postgres").
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/ocr
+      # --- VRAM tuning (shared 20GB GPU with Ollama/Gemma) ---
+      - OCR_DPI=150                          # render pages at 150 DPI (was 200) to cut per-page activation memory
+      - FLAGS_allocator_strategy=auto_growth # grow VRAM on demand instead of pre-reserving a large chunk
+      - FLAGS_eager_delete_tensor_gb=0       # free intermediate tensors immediately so memory is returned promptly
       # Image description via local Ollama (Gemma 4 E4B), OpenAI-compatible API.
       # Container-to-container the host is the service name "ollama", not localhost.
       # - IMAGE_DESCRIPTION_ENABLED=true
