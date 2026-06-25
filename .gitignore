@@ -1,2 +1,6 @@
 __pycache__/
 app/__pycache__/
+backups/
+.DS_Store
+.env
+.env.honcho

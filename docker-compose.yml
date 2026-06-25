@@ -202,6 +202,30 @@ services:
         required: false
     restart: unless-stopped
 
+  # Periodic backups: dumps every Postgres DB and a point-in-time Redis RDB
+  # to ./backups every 24h. Connects over the network (no volume sharing).
+  #   postgres -> ./backups/postgres/<db>/<db>-<timestamp>.sql.gz
+  #   redis    -> ./backups/redis/redis-<timestamp>.rdb
+  backup:
+    build: ./backup
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - PGHOST=postgres
+      - PGUSER=postgres
+      - PGPASSWORD=postgres
+      - POSTGRES_DBS=ocr honcho       # space-separated list of databases to dump
+      - REDIS_HOST=redis
+      - BACKUP_INTERVAL=86400          # seconds between backups (24h)
+      - BACKUP_RETENTION_DAYS=7        # delete backups older than this; 0 disables
+      # - RUN_ONCE=true                # uncomment for a one-shot backup, then exit
+    volumes:
+      - ./backups:/backups
+    restart: unless-stopped
+
 volumes:
   ocr-data:
   ollama-models:
