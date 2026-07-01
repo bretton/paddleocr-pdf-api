@@ -96,7 +96,8 @@ services:
     volumes:
       - ollama-models:/root/.ollama
     environment:
-      - OLLAMA_KEEP_ALIVE=5m             # unload idle models to free VRAM (shared GPU)
+      - OLLAMA_KEEP_ALIVE=-1             # keep loaded models resident indefinitely (never unload on idle)
+      - OLLAMA_MAX_LOADED_MODELS=2       # allow gemma4:e4b + mxbai-embed-large to stay resident together
       - OLLAMA_CONTEXT_LENGTH=65536
     deploy:
       resources:
@@ -105,9 +106,47 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]    # returns 0 once the Ollama server is up
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
-    # Pull the model once after first start:
+    # Models are pulled + pinned automatically by the ollama-warmup service below.
+    # To pull manually instead:
     #   docker compose -f docker-compose.baked.yml exec ollama ollama pull gemma4:e4b
+
+  # Keeps the Honcho memory models (gemma4:e4b + mxbai-embed-large) pulled and
+  # pinned in GPU memory at all times. Paired with OLLAMA_KEEP_ALIVE=-1 above,
+  # models never unload; this loop re-pins them if Ollama restarts.
+  ollama-warmup:
+    image: curlimages/curl:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        OLLAMA=http://ollama:11434
+        echo "[warmup] waiting for Ollama API..."
+        until curl -sf "$$OLLAMA/api/tags" >/dev/null 2>&1; do sleep 2; done
+        echo "[warmup] pulling models (idempotent)..."
+        curl -s "$$OLLAMA/api/pull" -d '{"model":"gemma4:e4b"}'        >/dev/null
+        curl -s "$$OLLAMA/api/pull" -d '{"model":"mxbai-embed-large"}' >/dev/null
+        echo "[warmup] pinning models with keep_alive=-1; re-checking every 60s..."
+        while true; do
+          if ! curl -sf "$$OLLAMA/api/ps" | grep -q '"gemma4:e4b"'; then
+            curl -s "$$OLLAMA/api/generate"   -d '{"model":"gemma4:e4b","keep_alive":-1}' >/dev/null || true
+          fi
+          if ! curl -sf "$$OLLAMA/api/ps" | grep -q '"mxbai-embed-large"'; then
+            curl -s "$$OLLAMA/api/embeddings" -d '{"model":"mxbai-embed-large","prompt":"warmup","keep_alive":-1}' >/dev/null || true
+          fi
+          sleep 60
+        done
+    restart: unless-stopped
 
   # Shared PostgreSQL (pgvector). Hosts two databases:
   #   - "ocr"    : PaddleOCR job/page state (plain tables)
