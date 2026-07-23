@@ -410,7 +410,20 @@ docker compose exec ollama ollama pull gemma4:e4b   # ~9.6GB, one-time
 Notes:
 
 - **Endpoints.** PaddleOCR stays on `localhost:8099`; Ollama is on `localhost:11434` (OpenAI-compatible at `/v1`). Container-to-container, PaddleOCR reaches Ollama via the service name `ollama`, not `localhost`.
-- **VRAM.** PaddleOCR-VL (~8.5GB) + Gemma 4 E4B (~9.6GB) ≈ 18GB on a single card. The compose files ship with `OLLAMA_KEEP_ALIVE=-1`, which keeps the Honcho memory models (`gemma4:e4b` + `mxbai-embed-large`, ~0.7GB) resident in GPU memory at all times so there is no cold-start reload — total footprint ≈ 18.8GB of the 20GB card. If you hit CUDA OOM under concurrent OCR load, set a finite `OLLAMA_KEEP_ALIVE` (e.g. `30s`) so Gemma unloads between calls, or move Ollama to a second GPU. The `ollama-warmup` sidecar pulls both models on first start and re-pins them if Ollama restarts.
+- **VRAM (single 20GB card, keep-alive + fast reload).** The compose files run in keep-alive mode: `gemma4:e4b` loads on demand and unloads after `OLLAMA_KEEP_ALIVE=5m` idle; the tiny `mxbai-embed-large` (~0.7GB) stays pinned so Honcho's per-message embeddings are always instant. Budget:
+
+  | Component | VRAM (nvidia-smi) |
+  |---|---|
+  | PaddleOCR process (`FLAGS_gpu_memory_limit_mb=7000` pool + ~2GB CUDA/cuDNN overhead) | ~9–9.5GB |
+  | `mxbai-embed-large` (pinned) | ~0.7GB |
+  | `gemma4:e4b` (on demand, incl. 32K-ctx KV cache) | ~9GB when active |
+  | Ollama runtime / CUDA context | ~0.6GB |
+
+  The critical setting is `FLAGS_gpu_memory_limit_mb=7000` on the `paddleocr` service — **do not remove it**. PaddlePaddle's `auto_growth` allocator retains its peak VRAM for the life of the process; without the cap, one large OCR job permanently squats on the memory Gemma needs to reload after idling out, and it "never comes back". Note the flag caps only Paddle's allocator *pool*; the process total in nvidia-smi is roughly the cap plus ~2GB of CUDA context and cuDNN/cuBLAS workspaces (this is why a 9000 cap showed ~11.7GB). With the 7000 cap, ~10.5GB stays free, so a Gemma reload is a fast disk→VRAM load (~5–10s) — the `ollama-warmup` sidecar pre-pulls both models so a reload is never a ~9.6GB download.
+
+  `OLLAMA_CONTEXT_LENGTH=32768` (down from 64K) trims Gemma's KV-cache reservation to make the active-side budget fit; raise it only if Honcho prompts overflow. Other knobs: raise `OLLAMA_KEEP_ALIVE` (e.g. `30m`) to reload less often, or lower `OCR_DPI` if OCR pages hit their capped OOM. A second GPU for Ollama removes the tradeoff entirely.
+
+  Verify after redeploy: `nvidia-smi` should show the paddleocr process at ~9–9.5GB even after a large OCR job. If it exceeds that, the flag isn't applied — recreate the container (`docker compose up -d --force-recreate paddleocr`) and confirm with `docker compose exec paddleocr env | grep FLAGS_gpu`.
 - **GPU sharing.** Both containers request the same NVIDIA device and time-share it; no extra configuration is needed beyond the `deploy.resources` block.
 - **Higher throughput.** For heavy, concurrent description workloads, vLLM (with continuous batching) outperforms Ollama, at the cost of holding VRAM resident. Ollama is the better fit for the bursty, low-volume description workload and a shared GPU.
 

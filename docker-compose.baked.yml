@@ -60,6 +60,16 @@ services:
       # Use the shared Postgres "ocr" database (container-to-container host = "postgres").
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/ocr
       # --- VRAM tuning (shared 20GB GPU with Ollama/Gemma) ---
+      # HARD CAP - do not remove. PaddlePaddle's auto_growth allocator retains
+      # its peak VRAM for the life of the process, so without this cap one big
+      # OCR job permanently squats on the memory gemma4:e4b needs to reload
+      # after idling out (OLLAMA_KEEP_ALIVE), and it "never comes back".
+      # NOTE: this flag caps only Paddle's allocator POOL. nvidia-smi shows the
+      # whole process: pool + CUDA context (~0.5GB) + cuDNN/cuBLAS workspaces
+      # (~1.5-2GB). With 7000 here, expect ~9-9.5GB in nvidia-smi, leaving
+      # ~10.5GB free for gemma (+KV cache at 32K ctx) + pinned mxbai. Worst case
+      # is a contained per-page OCR OOM (lower OCR_DPI to fix), not dead models.
+      - FLAGS_gpu_memory_limit_mb=7000       # Paddle allocator-pool cap (MB); process total ~= this + ~2GB overhead
       - OCR_DPI=150                          # render pages at 150 DPI (was 200) to cut per-page activation memory
       - FLAGS_allocator_strategy=auto_growth # grow VRAM on demand instead of pre-reserving a large chunk
       - FLAGS_eager_delete_tensor_gb=0       # free intermediate tensors immediately so memory is returned promptly
@@ -96,9 +106,9 @@ services:
     volumes:
       - ollama-models:/root/.ollama
     environment:
-      - OLLAMA_KEEP_ALIVE=-1             # keep loaded models resident indefinitely (never unload on idle)
-      - OLLAMA_MAX_LOADED_MODELS=2       # allow gemma4:e4b + mxbai-embed-large to stay resident together
-      - OLLAMA_CONTEXT_LENGTH=65536
+      - OLLAMA_KEEP_ALIVE=5m             # gemma unloads after 5m idle to free VRAM; reload is fast (disk->VRAM, ~5-10s)
+      - OLLAMA_MAX_LOADED_MODELS=2       # allow gemma4:e4b + mxbai-embed-large resident together during activity
+      - OLLAMA_CONTEXT_LENGTH=32768      # 64K reserved a much larger KV cache; 32K trims gemma's VRAM so it fits alongside capped OCR. Raise only if Honcho prompts overflow.
     deploy:
       resources:
         reservations:
@@ -113,13 +123,18 @@ services:
       retries: 5
       start_period: 20s
     restart: unless-stopped
-    # Models are pulled + pinned automatically by the ollama-warmup service below.
-    # To pull manually instead:
+    # Models are pulled automatically by the ollama-warmup service below
+    # (mxbai stays pinned; gemma loads on demand). To pull manually instead:
     #   docker compose -f docker-compose.baked.yml exec ollama ollama pull gemma4:e4b
 
-  # Keeps the Honcho memory models (gemma4:e4b + mxbai-embed-large) pulled and
-  # pinned in GPU memory at all times. Paired with OLLAMA_KEEP_ALIVE=-1 above,
-  # models never unload; this loop re-pins them if Ollama restarts.
+  # Warmup strategy (keep-alive mode):
+  #   - Pulls both Honcho models on first start so any later load is a fast
+  #     disk->VRAM load (~5-10s for gemma), never a ~9.6GB download.
+  #   - Pins ONLY mxbai-embed-large (~0.7GB) with keep_alive=-1: Honcho embeds
+  #     every message, so embeddings stay instant at negligible VRAM cost.
+  #   - gemma4:e4b loads on demand and unloads after OLLAMA_KEEP_ALIVE idle.
+  #     The FLAGS_gpu_memory_limit_mb cap on paddleocr guarantees enough free
+  #     VRAM always remains for gemma to reload.
   ollama-warmup:
     image: curlimages/curl:latest
     depends_on:
@@ -136,14 +151,15 @@ services:
         echo "[warmup] pulling models (idempotent)..."
         curl -s "$$OLLAMA/api/pull" -d '{"model":"gemma4:e4b"}'        >/dev/null
         curl -s "$$OLLAMA/api/pull" -d '{"model":"mxbai-embed-large"}' >/dev/null
-        echo "[warmup] pinning models with keep_alive=-1; re-checking every 60s..."
+        echo "[warmup] pinning mxbai-embed-large (keep_alive=-1); re-checking every 60s..."
         while true; do
-          if ! curl -sf "$$OLLAMA/api/ps" | grep -q '"gemma4:e4b"'; then
-            curl -s "$$OLLAMA/api/generate"   -d '{"model":"gemma4:e4b","keep_alive":-1}' >/dev/null || true
-          fi
-          if ! curl -sf "$$OLLAMA/api/ps" | grep -q '"mxbai-embed-large"'; then
-            curl -s "$$OLLAMA/api/embeddings" -d '{"model":"mxbai-embed-large","prompt":"warmup","keep_alive":-1}' >/dev/null || true
-          fi
+          PS=$$(curl -sf "$$OLLAMA/api/ps" || echo '{}')
+          case "$$PS" in
+            *'"mxbai-embed-large"'*) : ;;
+            *) echo "[warmup] mxbai-embed-large NOT resident -> re-pinning"
+               R=$$(curl -s "$$OLLAMA/api/embeddings" -d '{"model":"mxbai-embed-large","prompt":"warmup","keep_alive":-1}')
+               echo "[warmup]   mxbai response: $$R" ;;
+          esac
           sleep 60
         done
     restart: unless-stopped
